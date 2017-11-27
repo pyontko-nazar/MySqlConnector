@@ -254,5 +254,250 @@ namespace MySqlConnector.Utilities
 			architecture = RuntimeInformation.ProcessArchitecture.ToString();
 		}
 #endif
+
+		internal static DateTime ParseDateTime(ArraySegment<byte> value, bool convertZeroDateTime)
+		{
+#if LEGACY_PARSER
+			return ParseDateTimeLegacy(value, convertZeroDateTime);
+#else
+			int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, microseconds = 0;
+			var currentIndex = 0;
+			var currentPart = ParsedDateTimePart.Year;
+			while (currentIndex < value.Count)
+			{
+				// ReSharper disable once PossibleNullReferenceException
+				var b = (char) value.Array[value.Offset + currentIndex];
+				if (b < '0' || b > '9')
+					currentIndex++; // Skipe delimiter
+				else
+				{
+					var tmpIndex = currentIndex;
+					var n = ParseInt32(value, ref tmpIndex);
+					switch (currentPart)
+					{
+					case ParsedDateTimePart.Year:
+						year = n;
+						break;
+					case ParsedDateTimePart.Month:
+						month = n;
+						break;
+					case ParsedDateTimePart.Day:
+						day = n;
+						break;
+					case ParsedDateTimePart.Hour:
+						hour = n;
+						break;
+					case ParsedDateTimePart.Minute:
+						minute = n;
+						break;
+					case ParsedDateTimePart.Second:
+						second = n;
+						break;
+					case ParsedDateTimePart.Microseconds:
+					{
+						var microDiff = tmpIndex - currentIndex;
+						while (microDiff < 6)
+						{
+							microDiff++;
+							n *= 10;
+						}
+						microseconds = n;
+						break;
+					}
+					}
+
+					if (currentIndex == tmpIndex)
+						throw new InvalidCastException($"Unable to convert MySQL date/time to System.DateTime: {Encoding.UTF8.GetString(value)}.");
+
+					currentIndex = tmpIndex;
+					currentPart++;
+				}
+			}
+
+			if (currentPart <= ParsedDateTimePart.Hour)
+			{
+				if (year == 0 && month == 0 && day == 0)
+				{
+					if (convertZeroDateTime)
+						return DateTime.MinValue;
+					throw new InvalidCastException($"Unable to convert MySQL date/time to System.DateTime: {Encoding.UTF8.GetString(value)}.");
+				}
+
+				var dt = new DateTime(year, month, day);
+				return dt;
+			}
+			if (currentPart <= ParsedDateTimePart.Microseconds)
+			{
+				var dt = new DateTime(year, month, day, hour, minute, second);
+				return dt;
+			}
+
+			var dtWithMicroseconds =
+				new DateTime(year, month, day, hour, minute, second, microseconds / 1000).AddTicks(microseconds % 1000 * 10);
+			return dtWithMicroseconds;
+#endif
+		}
+
+		internal static TimeSpan ParseTimeSpan(ArraySegment<byte> value)
+		{
+#if LEGACY_PARSER
+			return ParseTimeSpanLegacy(value);
+#else
+			int hours = 0, minutes = 0, seconds = 0, microseconds = 0;
+			var currentIndex = 0;
+			var currentPart = ParsedDateTimePart.Hour;
+			while (currentIndex < value.Count)
+			{
+				// ReSharper disable once PossibleNullReferenceException
+				var b = (char) value.Array[value.Offset + currentIndex];
+				if ((b < '0' || b > '9') && b != '-' && b != '+')
+					currentIndex++; // Skipe delimiter
+				else
+				{
+					var tmpIndex = currentIndex;
+					var n = ParseInt32(value, ref tmpIndex);
+					switch (currentPart)
+					{
+					case ParsedDateTimePart.Hour:
+						hours = n;
+						break;
+					case ParsedDateTimePart.Minute:
+						minutes = n;
+						break;
+					case ParsedDateTimePart.Second:
+						seconds = n;
+						break;
+					case ParsedDateTimePart.Microseconds:
+					{
+						var microDiff = tmpIndex - currentIndex;
+						while (microDiff < 6)
+						{
+							microDiff++;
+							n *= 10;
+						}
+						microseconds = n;
+						break;
+					}
+					}
+
+					if (currentIndex == tmpIndex)
+						throw new InvalidCastException($"Unable to convert MySQL date/time to System.DateTime: {Encoding.UTF8.GetString(value)}.");
+
+					currentIndex = tmpIndex;
+					currentPart++;
+				}
+			}
+
+			if (hours < 0)
+				minutes = -minutes;
+			if (hours < 0)
+				seconds = -seconds;
+			if (currentPart <= ParsedDateTimePart.Microseconds)
+			{
+				var ts = new TimeSpan(hours, minutes, seconds);
+				return ts;
+			}
+
+			if (hours < 0)
+				microseconds = -microseconds;
+			var tsWithMicroseconds = new TimeSpan(0, hours, minutes, seconds, microseconds / 1000) +
+			                         TimeSpan.FromTicks(microseconds % 1000 * 10);
+			return tsWithMicroseconds;
+#endif
+		}
+
+		private enum ParsedDateTimePart
+		{
+			Year,
+			Month,
+			Day,
+			Hour,
+			Minute,
+			Second,
+			Microseconds
+		}
+
+		internal static int ParseInt32(ArraySegment<byte> s)
+		{
+			var index = 0;
+			return ParseInt32(s, ref index);
+		}
+
+		private static int ParseInt32(ArraySegment<byte> s, ref int index)
+		{
+			var bytes = s.Array;
+			var len = s.Count;
+
+			var sign = 1;
+			var number = 0;
+
+			for (; index < len; ++index)
+			{
+				var ch = (char) bytes[s.Offset + index];
+				if (ch == '-')
+					sign = -1;
+				else
+					break;
+			}
+
+			for (; index < len; ++index)
+			{
+				var digit = (char) bytes[s.Offset + index] - '0';
+				if (digit < 0 || digit > 9)
+					break;
+
+				number *= 10;
+				number += digit;
+			}
+			return sign * number;
+		}
+
+		internal static DateTime ParseDateTimeLegacy(ArraySegment<byte> value, bool convertZeroDateTime)
+		{
+			var parts = Encoding.UTF8.GetString(value).Split('-', ' ', ':', '.');
+
+			var year = int.Parse(parts[0], CultureInfo.InvariantCulture);
+			var month = int.Parse(parts[1], CultureInfo.InvariantCulture);
+			var day = int.Parse(parts[2], CultureInfo.InvariantCulture);
+
+			if (year == 0 && month == 0 && day == 0)
+			{
+				if (convertZeroDateTime)
+					return DateTime.MinValue;
+				throw new InvalidCastException("Unable to convert MySQL date/time to System.DateTime.");
+			}
+
+			if (parts.Length == 3)
+				return new DateTime(year, month, day);
+
+			var hour = int.Parse(parts[3], CultureInfo.InvariantCulture);
+			var minute = int.Parse(parts[4], CultureInfo.InvariantCulture);
+			var second = int.Parse(parts[5], CultureInfo.InvariantCulture);
+			if (parts.Length == 6)
+				return new DateTime(year, month, day, hour, minute, second);
+
+			var microseconds = int.Parse(parts[6] + new string('0', 6 - parts[6].Length), CultureInfo.InvariantCulture);
+			return new DateTime(year, month, day, hour, minute, second, microseconds / 1000).AddTicks(microseconds % 1000 * 10);
+		}
+
+		internal static TimeSpan ParseTimeSpanLegacy(ArraySegment<byte> value)
+		{
+			var parts = Encoding.UTF8.GetString(value).Split(':', '.');
+
+			var hours = int.Parse(parts[0], CultureInfo.InvariantCulture);
+			var minutes = int.Parse(parts[1], CultureInfo.InvariantCulture);
+			if (hours < 0)
+				minutes = -minutes;
+			var seconds = int.Parse(parts[2], CultureInfo.InvariantCulture);
+			if (hours < 0)
+				seconds = -seconds;
+			if (parts.Length == 3)
+				return new TimeSpan(hours, minutes, seconds);
+
+			var microseconds = int.Parse(parts[3] + new string('0', 6 - parts[3].Length), CultureInfo.InvariantCulture);
+			if (hours < 0)
+				microseconds = -microseconds;
+			return new TimeSpan(0, hours, minutes, seconds, microseconds / 1000) + TimeSpan.FromTicks(microseconds % 1000 * 10);
+		}
 	}
 }

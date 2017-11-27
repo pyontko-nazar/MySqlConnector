@@ -265,7 +265,7 @@ namespace MySqlConnector.Core
 			switch (columnDefinition.ColumnType)
 			{
 				case ColumnType.Tiny:
-					var value = int.Parse(Encoding.UTF8.GetString(data), CultureInfo.InvariantCulture);
+					var value = Utility.ParseInt32(data);
 					if (Connection.TreatTinyAsBoolean && columnDefinition.ColumnLength == 1)
 						return value != 0;
 					return isUnsigned ? (object) (byte) value : (sbyte) value;
@@ -315,13 +315,13 @@ namespace MySqlConnector.Core
 				case ColumnType.Date:
 				case ColumnType.DateTime:
 				case ColumnType.Timestamp:
-					return ParseDateTime(data);
+					return Utility.ParseDateTime(data, Connection.ConvertZeroDateTime);
 
 				case ColumnType.Time:
-					return ParseTimeSpan(data);
+					return Utility.ParseTimeSpan(data);
 
 				case ColumnType.Year:
-					return int.Parse(Encoding.UTF8.GetString(data), CultureInfo.InvariantCulture);
+					return Utility.ParseInt32(data);
 
 				case ColumnType.Float:
 					return float.Parse(Encoding.UTF8.GetString(data), CultureInfo.InvariantCulture);
@@ -352,54 +352,6 @@ namespace MySqlConnector.Core
 				throw new ArgumentOutOfRangeException(nameof(bufferOffset), bufferOffset, "bufferOffset must be within the buffer");
 			if (checked(bufferOffset + length) > buffer.Length)
 				throw new ArgumentException("bufferOffset + length cannot exceed buffer.Length", nameof(length));
-		}
-
-		private DateTime ParseDateTime(ArraySegment<byte> value)
-		{
-			var parts = Encoding.UTF8.GetString(value).Split('-', ' ', ':', '.');
-
-			var year = int.Parse(parts[0], CultureInfo.InvariantCulture);
-			var month = int.Parse(parts[1], CultureInfo.InvariantCulture);
-			var day = int.Parse(parts[2], CultureInfo.InvariantCulture);
-
-			if (year == 0 && month == 0 && day == 0)
-			{
-				if (Connection.ConvertZeroDateTime)
-					return DateTime.MinValue;
-				throw new InvalidCastException("Unable to convert MySQL date/time to System.DateTime.");
-			}
-
-			if (parts.Length == 3)
-				return new DateTime(year, month, day);
-
-			var hour = int.Parse(parts[3], CultureInfo.InvariantCulture);
-			var minute = int.Parse(parts[4], CultureInfo.InvariantCulture);
-			var second = int.Parse(parts[5], CultureInfo.InvariantCulture);
-			if (parts.Length == 6)
-				return new DateTime(year, month, day, hour, minute, second);
-
-			var microseconds = int.Parse(parts[6] + new string('0', 6 - parts[6].Length), CultureInfo.InvariantCulture);
-			return new DateTime(year, month, day, hour, minute, second, microseconds / 1000).AddTicks(microseconds % 1000 * 10);
-		}
-
-		private static TimeSpan ParseTimeSpan(ArraySegment<byte> value)
-		{
-			var parts = Encoding.UTF8.GetString(value).Split(':', '.');
-
-			var hours = int.Parse(parts[0], CultureInfo.InvariantCulture);
-			var minutes = int.Parse(parts[1], CultureInfo.InvariantCulture);
-			if (hours < 0)
-				minutes = -minutes;
-			var seconds = int.Parse(parts[2], CultureInfo.InvariantCulture);
-			if (hours < 0)
-				seconds = -seconds;
-			if (parts.Length == 3)
-				return new TimeSpan(hours, minutes, seconds);
-
-			var microseconds = int.Parse(parts[3] + new string('0', 6 - parts[3].Length), CultureInfo.InvariantCulture);
-			if (hours < 0)
-				microseconds = -microseconds;
-			return new TimeSpan(0, hours, minutes, seconds, microseconds / 1000) + TimeSpan.FromTicks(microseconds % 1000 * 10);
 		}
 
 		public readonly ResultSet ResultSet;
